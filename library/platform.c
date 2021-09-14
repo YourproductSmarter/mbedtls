@@ -239,7 +239,11 @@ static void platform_exit_uninit( int status )
 #define MBEDTLS_PLATFORM_STD_EXIT   platform_exit_uninit
 #endif /* !MBEDTLS_PLATFORM_STD_EXIT */
 
-void (*mbedtls_exit)( int status ) = MBEDTLS_PLATFORM_STD_EXIT;
+#ifdef MBEDTLS_PLATFORM_EXIT_ALT
+  void (*mbedtls_exit)( int status );
+#else
+  void (*mbedtls_exit)( int status ) = MBEDTLS_PLATFORM_STD_EXIT;
+#endif
 
 int mbedtls_platform_set_exit( void (*exit_func)( int status ) )
 {
