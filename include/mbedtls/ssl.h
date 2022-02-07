@@ -572,6 +572,7 @@
 /* Dummy type used only for its size */
 union mbedtls_ssl_premaster_secret
 {
+  uint8_t dummy_variable;
 #if defined(MBEDTLS_KEY_EXCHANGE_RSA_ENABLED)
     unsigned char _pms_rsa[48];                         /* RFC 5246 8.1.1 */
 #endif
