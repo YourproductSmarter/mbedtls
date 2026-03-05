@@ -6,126 +6,222 @@ This script can also run on outcomes from a partial run, but the results are
 less likely to be useful.
 """
 
-import argparse
 import re
-import sys
-import traceback
+import typing
 
-import check_test_cases
+import scripts_path # pylint: disable=unused-import
+from mbedtls_framework import outcome_analysis
 
-class Results:
-    """Process analysis results."""
 
-    def __init__(self):
-        self.error_count = 0
-        self.warning_count = 0
+class CoverageTask(outcome_analysis.CoverageTask):
+    """Justify test cases that are never executed."""
 
     @staticmethod
-    def log(fmt, *args, **kwargs):
-        sys.stderr.write((fmt + '\n').format(*args, **kwargs))
+    def _has_word_re(words: typing.Iterable[str],
+                     exclude: typing.Optional[str] = None) -> typing.Pattern:
+        """Construct a regex that matches if any of the words appears.
 
-    def error(self, fmt, *args, **kwargs):
-        self.log('Error: ' + fmt, *args, **kwargs)
-        self.error_count += 1
+        The occurrence must start and end at a word boundary.
 
-    def warning(self, fmt, *args, **kwargs):
-        self.log('Warning: ' + fmt, *args, **kwargs)
-        self.warning_count += 1
-
-class TestCaseOutcomes:
-    """The outcomes of one test case across many configurations."""
-    # pylint: disable=too-few-public-methods
-
-    def __init__(self):
-        # Collect a list of witnesses of the test case succeeding or failing.
-        # Currently we don't do anything with witnesses except count them.
-        # The format of a witness is determined by the read_outcome_file
-        # function; it's the platform and configuration joined by ';'.
-        self.successes = []
-        self.failures = []
-
-    def hits(self):
-        """Return the number of times a test case has been run.
-
-        This includes passes and failures, but not skips.
+        If exclude is specified, strings containing a match for that
+        regular expression will not match the returned pattern.
         """
-        return len(self.successes) + len(self.failures)
+        exclude_clause = r''
+        if exclude:
+            exclude_clause = r'(?!.*' + exclude + ')'
+        return re.compile(exclude_clause +
+                          r'.*\b(?:' + r'|'.join(words) + r')\b.*',
+                          re.DOTALL)
 
-class TestDescriptions(check_test_cases.TestDescriptionExplorer):
-    """Collect the available test cases."""
+    IGNORED_TESTS = {
+        'ssl-opt': [
+            # We don't run ssl-opt.sh with Valgrind on the CI because
+            # it's extremely slow. We don't intend to change this.
+            'DTLS client reconnect from same port: reconnect, nbio, valgrind',
+            # We don't have IPv6 in our CI environment.
+            # https://github.com/Mbed-TLS/mbedtls-test/issues/176
+            'DTLS cookie: enabled, IPv6',
+            # Disabled due to OpenSSL bug.
+            # https://github.com/openssl/openssl/issues/18887
+            'DTLS fragmenting: 3d, openssl client, DTLS 1.2',
+            # We don't run ssl-opt.sh with Valgrind on the CI because
+            # it's extremely slow. We don't intend to change this.
+            'DTLS fragmenting: proxy MTU: auto-reduction (with valgrind)',
+            # TLS doesn't use restartable ECDH yet.
+            # https://github.com/Mbed-TLS/mbedtls/issues/7294
+            re.compile(r'EC restart:.*no USE_PSA.*'),
+        ],
+        'test_suite_config.mbedtls_boolean': [
+            # Missing coverage of test configurations.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9585
+            'Config: !MBEDTLS_SSL_DTLS_ANTI_REPLAY',
+            # Missing coverage of test configurations.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9585
+            'Config: !MBEDTLS_SSL_DTLS_HELLO_VERIFY',
+            # We don't run test_suite_config when we test this.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9586
+            'Config: !MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED',
+        ],
+        'test_suite_config.crypto_combinations': [
+            # New thing in crypto. Not intended to be tested separately
+            # in mbedtls.
+            # https://github.com/Mbed-TLS/mbedtls/issues/10300
+            'Config: entropy: NV seed only',
+        ],
+        'test_suite_config.psa_boolean': [
+            # We don't test with HMAC disabled.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9591
+            'Config: !PSA_WANT_ALG_HMAC',
+            # The DERIVE key type is always enabled.
+            'Config: !PSA_WANT_KEY_TYPE_DERIVE',
+            # More granularity of key pair type enablement macros
+            # than we care to test.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9590
+            'Config: !PSA_WANT_KEY_TYPE_DH_KEY_PAIR_EXPORT',
+            'Config: !PSA_WANT_KEY_TYPE_DH_KEY_PAIR_GENERATE',
+            'Config: !PSA_WANT_KEY_TYPE_DH_KEY_PAIR_IMPORT',
+            # More granularity of key pair type enablement macros
+            # than we care to test.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9590
+            'Config: !PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_EXPORT',
+            'Config: !PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_IMPORT',
+            # We don't test with HMAC disabled.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9591
+            'Config: !PSA_WANT_KEY_TYPE_HMAC',
+            # The PASSWORD key type is always enabled.
+            'Config: !PSA_WANT_KEY_TYPE_PASSWORD',
+            # The PASSWORD_HASH key type is always enabled.
+            'Config: !PSA_WANT_KEY_TYPE_PASSWORD_HASH',
+            # The RAW_DATA key type is always enabled.
+            'Config: !PSA_WANT_KEY_TYPE_RAW_DATA',
+            # More granularity of key pair type enablement macros
+            # than we care to test.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9590
+            'Config: !PSA_WANT_KEY_TYPE_RSA_KEY_PAIR_EXPORT',
+            'Config: !PSA_WANT_KEY_TYPE_RSA_KEY_PAIR_IMPORT',
+            # Algorithm declared but not supported.
+            'Config: PSA_WANT_ALG_CBC_MAC',
+            # Algorithm declared but not supported.
+            'Config: PSA_WANT_ALG_XTS',
+            # More granularity of key pair type enablement macros
+            # than we care to test.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9590
+            'Config: PSA_WANT_KEY_TYPE_DH_KEY_PAIR_DERIVE',
+            'Config: PSA_WANT_KEY_TYPE_ECC_KEY_PAIR',
+            'Config: PSA_WANT_KEY_TYPE_RSA_KEY_PAIR',
+            'Config: PSA_WANT_KEY_TYPE_RSA_KEY_PAIR_DERIVE',
+            # https://github.com/Mbed-TLS/mbedtls/issues/9583
+            'Config: !MBEDTLS_ECP_NIST_OPTIM',
+            # We never test without the PSA client code. Should we?
+            # https://github.com/Mbed-TLS/TF-PSA-Crypto/issues/112
+            'Config: !MBEDTLS_PSA_CRYPTO_CLIENT',
+                        # We only test multithreading with pthreads.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9584
+            'Config: !MBEDTLS_THREADING_PTHREAD',
+            # Built but not tested.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9587
+            'Config: MBEDTLS_AES_USE_HARDWARE_ONLY',
+            # Untested platform-specific optimizations.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9588
+            'Config: MBEDTLS_HAVE_SSE2',
+            # Untested aspect of the platform interface.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9589
+            'Config: MBEDTLS_PLATFORM_NO_STD_FUNCTIONS',
+            # In a client-server build, test_suite_config runs in the
+            # client configuration, so it will never report
+            # MBEDTLS_PSA_CRYPTO_SPM as enabled. That's ok.
+            'Config: MBEDTLS_PSA_CRYPTO_SPM',
+            # We don't test on armv8 yet.
+            'Config: MBEDTLS_SHA256_USE_ARMV8_A_CRYPTO_ONLY',
+            'Config: MBEDTLS_SHA512_USE_A64_CRYPTO_ONLY',
+            # We don't run test_suite_config when we test this.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9586
+            'Config: MBEDTLS_TEST_CONSTANT_FLOW_VALGRIND',
+        ],
+        'test_suite_config.psa_combinations': [
+            # We don't test this unusual, but sensible configuration.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9592
+            'Config: PSA_WANT_ALG_DETERMINSTIC_ECDSA without PSA_WANT_ALG_ECDSA',
+        ],
+        'test_suite_pkcs12': [
+            # We never test with CBC/PKCS5/PKCS12 enabled but
+            # PKCS7 padding disabled.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9580
+            'PBE Decrypt, (Invalid padding & PKCS7 padding disabled)',
+            'PBE Encrypt, pad = 8 (PKCS7 padding disabled)',
+        ],
+        'test_suite_pkcs5': [
+            # We never test with CBC/PKCS5/PKCS12 enabled but
+            # PKCS7 padding disabled.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9580
+            'PBES2 Decrypt (Invalid padding & PKCS7 padding disabled)',
+            'PBES2 Encrypt, pad=6 (PKCS7 padding disabled)',
+            'PBES2 Encrypt, pad=8 (PKCS7 padding disabled)',
+        ],
+        'test_suite_psa_crypto': [
+            # We don't test this unusual, but sensible configuration.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9592
+            re.compile(r'.*ECDSA.*only deterministic supported'),
+        ],
+        'test_suite_psa_crypto_metadata': [
+            # Algorithms declared but not supported.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9579
+            'Asymmetric signature: Ed25519ph',
+            'Asymmetric signature: Ed448ph',
+            'Asymmetric signature: pure EdDSA',
+            'Cipher: XTS',
+            'MAC: CBC_MAC-3DES',
+            'MAC: CBC_MAC-AES-128',
+            'MAC: CBC_MAC-AES-192',
+            'MAC: CBC_MAC-AES-256',
+        ],
+        'test_suite_psa_crypto_not_supported.generated': [
+            # We never test with DH key support disabled but support
+            # for a DH group enabled. The dependencies of these test
+            # cases don't really make sense.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9574
+            re.compile(r'PSA \w+ DH_.*type not supported'),
+            # We only test partial support for DH with the 2048-bit group
+            # enabled and the other groups disabled.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9575
+            'PSA generate DH_KEY_PAIR(RFC7919) 2048-bit group not supported',
+            'PSA import DH_KEY_PAIR(RFC7919) 2048-bit group not supported',
+            'PSA import DH_PUBLIC_KEY(RFC7919) 2048-bit group not supported',
+        ],
+        'test_suite_psa_crypto_op_fail.generated': [
+            # We don't test this unusual, but sensible configuration.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9592
+            re.compile(r'.*: !ECDSA but DETERMINISTIC_ECDSA with ECC_.*'),
+            # We never test with the HMAC algorithm enabled but the HMAC
+            # key type disabled. Those dependencies don't really make sense.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9573
+            re.compile(r'.* !HMAC with HMAC'),
+            # We don't test with ECDH disabled but the key type enabled.
+            # https://github.com/Mbed-TLS/TF-PSA-Crypto/issues/161
+            re.compile(r'PSA key_agreement.* !ECDH with ECC_KEY_PAIR\(.*'),
+            # We don't test with FFDH disabled but the key type enabled.
+            # https://github.com/Mbed-TLS/TF-PSA-Crypto/issues/160
+            re.compile(r'PSA key_agreement.* !FFDH with DH_KEY_PAIR\(.*'),
+        ],
+        'test_suite_psa_crypto_op_fail.misc': [
+            # We don't test this unusual, but sensible configuration.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9592
+            'PSA sign DETERMINISTIC_ECDSA(SHA_256): !ECDSA but DETERMINISTIC_ECDSA with ECC_KEY_PAIR(SECP_R1)', #pylint: disable=line-too-long
+        ],
+        'tls13-misc': [
+            # Disabled due to OpenSSL bug.
+            # https://github.com/openssl/openssl/issues/10714
+            'TLS 1.3 O->m: resumption',
+            # Disabled due to OpenSSL command line limitation.
+            # https://github.com/Mbed-TLS/mbedtls/issues/9582
+            'TLS 1.3 m->O: resumption with early data',
+        ],
+    }
 
-    def __init__(self):
-        super().__init__()
-        self.descriptions = set()
-
-    def process_test_case(self, _per_file_state,
-                          file_name, _line_number, description):
-        """Record an available test case."""
-        base_name = re.sub(r'\.[^.]*$', '', re.sub(r'.*/', '', file_name))
-        key = ';'.join([base_name, description.decode('utf-8')])
-        self.descriptions.add(key)
-
-def collect_available_test_cases():
-    """Collect the available test cases."""
-    explorer = TestDescriptions()
-    explorer.walk_all()
-    return sorted(explorer.descriptions)
-
-def analyze_coverage(results, outcomes):
-    """Check that all available test cases are executed at least once."""
-    available = collect_available_test_cases()
-    for key in available:
-        hits = outcomes[key].hits() if key in outcomes else 0
-        if hits == 0:
-            # Make this a warning, not an error, as long as we haven't
-            # fixed this branch to have full coverage of test cases.
-            results.warning('Test case not executed: {}', key)
-
-def analyze_outcomes(outcomes):
-    """Run all analyses on the given outcome collection."""
-    results = Results()
-    analyze_coverage(results, outcomes)
-    return results
-
-def read_outcome_file(outcome_file):
-    """Parse an outcome file and return an outcome collection.
-
-An outcome collection is a dictionary mapping keys to TestCaseOutcomes objects.
-The keys are the test suite name and the test case description, separated
-by a semicolon.
-"""
-    outcomes = {}
-    with open(outcome_file, 'r', encoding='utf-8') as input_file:
-        for line in input_file:
-            (platform, config, suite, case, result, _cause) = line.split(';')
-            key = ';'.join([suite, case])
-            setup = ';'.join([platform, config])
-            if key not in outcomes:
-                outcomes[key] = TestCaseOutcomes()
-            if result == 'PASS':
-                outcomes[key].successes.append(setup)
-            elif result == 'FAIL':
-                outcomes[key].failures.append(setup)
-    return outcomes
-
-def analyze_outcome_file(outcome_file):
-    """Analyze the given outcome file."""
-    outcomes = read_outcome_file(outcome_file)
-    return analyze_outcomes(outcomes)
-
-def main():
-    try:
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument('outcomes', metavar='OUTCOMES.CSV',
-                            help='Outcome file to analyze')
-        options = parser.parse_args()
-        results = analyze_outcome_file(options.outcomes)
-        if results.error_count > 0:
-            sys.exit(1)
-    except Exception: # pylint: disable=broad-except
-        # Print the backtrace and exit explicitly with our chosen status.
-        traceback.print_exc()
-        sys.exit(120)
+# List of tasks with a function that can handle this task and additional arguments if required
+KNOWN_TASKS: typing.Dict[str, typing.Type[outcome_analysis.Task]] = {
+    'analyze_coverage': CoverageTask,
+}
 
 if __name__ == '__main__':
-    main()
+    outcome_analysis.main(KNOWN_TASKS)
